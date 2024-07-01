@@ -71,14 +71,8 @@ namespace Step7
   template <int dim>
   double Solution<dim>::value(const Point<dim> &p, const unsigned int) const
   {
-    double return_value = 0;
-    for (const auto &center : this->source_centers)
-      {
-        const Tensor<1, dim> x_minus_xi = p - center;
-        return_value +=
-          std::exp(-x_minus_xi.norm_square() / (this->width * this->width));
-      }
- 
+    double return_value = std::sin(p[0]);
+    
     return return_value;
   }
  
@@ -87,18 +81,11 @@ namespace Step7
   Tensor<1, dim> Solution<dim>::gradient(const Point<dim> &p,
                                          const unsigned int) const
   {
-    Tensor<1, dim> return_value;
- 
-    for (const auto &center : this->source_centers)
-      {
-        const Tensor<1, dim> x_minus_xi = p - center;
- 
-        return_value +=
-          (-2. / (this->width * this->width) *
-           std::exp(-x_minus_xi.norm_square() / (this->width * this->width)) *
-           x_minus_xi);
-      }
- 
+    double array[2];
+    array[0] = std::cos(p[0]);
+    array[1] = 0;
+    Tensor<1, dim> return_value(array);
+    
     return return_value;
   }
  
@@ -117,20 +104,8 @@ namespace Step7
   double RightHandSide<dim>::value(const Point<dim> &p,
                                    const unsigned int) const
   {
-    double return_value = 0;
-    for (const auto &center : this->source_centers)
-      {
-        const Tensor<1, dim> x_minus_xi = p - center;
- 
-        return_value +=
-          ((2. * dim -
-            4. * x_minus_xi.norm_square() / (this->width * this->width)) /
-           (this->width * this->width) *
-           std::exp(-x_minus_xi.norm_square() / (this->width * this->width)));
-        return_value +=
-          std::exp(-x_minus_xi.norm_square() / (this->width * this->width));
-      }
- 
+    double return_value = std::sin(p[0]);
+    
     return return_value;
   }
  
@@ -216,7 +191,7 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::assemble_system()
   {
-    double tmp2[2] = {0.01,0.};
+    double tmp2[2] = {0.01,0.0};
     Tensor<1,2> d(tmp2);
 
     double alpha = 20.;
@@ -373,7 +348,9 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::solve()
   {
-    SolverControl            solver_control(10000, 1e-12);
+    int iter = 100000;
+    double tol = 1e-12;
+    SolverControl            solver_control(iter, tol);
     SolverCG<Vector<double>> cg(solver_control);
  
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
