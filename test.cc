@@ -71,9 +71,17 @@ namespace Step7
   template <int dim>
   double Solution<dim>::value(const Point<dim> &p, const unsigned int) const
   {
-    double return_value = std::sin(p[0]);
-    
+    double return_value = 0;
+    for (const auto &center : this->source_centers)
+      {
+        const Tensor<1, dim> x_minus_xi = p - center;
+        return_value +=
+          std::exp(-x_minus_xi.norm_square() / (this->width * this->width));
+      }
+ 
     return return_value;
+    // const double pi = std::acos(-1);
+    // return std::sin(2.0 * pi * p[0]);
   }
  
  
@@ -81,12 +89,26 @@ namespace Step7
   Tensor<1, dim> Solution<dim>::gradient(const Point<dim> &p,
                                          const unsigned int) const
   {
-    double array[2];
-    array[0] = std::cos(p[0]);
-    array[1] = 0;
-    Tensor<1, dim> return_value(array);
-    
+    Tensor<1, dim> return_value;
+ 
+    for (const auto &center : this->source_centers)
+      {
+        const Tensor<1, dim> x_minus_xi = p - center;
+ 
+        return_value +=
+          (-2. / (this->width * this->width) *
+           std::exp(-x_minus_xi.norm_square() / (this->width * this->width)) *
+           x_minus_xi);
+      }
+ 
     return return_value;
+    // const double pi = std::acos(-1);
+    // double arr[2];
+    // arr[0] = 2.0 * pi * std::cos(2.0 * pi * p[0]);
+    // arr[1] = 0.;
+    // Tensor<1, dim> return_value(arr);
+
+    // return return_value;
   }
  
  
@@ -104,9 +126,23 @@ namespace Step7
   double RightHandSide<dim>::value(const Point<dim> &p,
                                    const unsigned int) const
   {
-    double return_value = std::sin(p[0]);
-    
+    double return_value = 0;
+    for (const auto &center : this->source_centers)
+      {
+        const Tensor<1, dim> x_minus_xi = p - center;
+ 
+        return_value +=
+          ((2. * dim -
+            4. * x_minus_xi.norm_square() / (this->width * this->width)) /
+           (this->width * this->width) *
+           std::exp(-x_minus_xi.norm_square() / (this->width * this->width)));
+        return_value +=
+          std::exp(-x_minus_xi.norm_square() / (this->width * this->width));
+      }
+ 
     return return_value;
+    // const double pi = std::acos(-1);
+    // return (4.0 * pi * pi + 1.0) * std::sin(2.0 * pi * p[0]);
   }
  
  
@@ -191,10 +227,8 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::assemble_system()
   {
-    double tmp2[2] = {0.01,0.0};
-    Tensor<1,2> d(tmp2);
 
-    double alpha = 20.;
+    double alpha = 20.0;
 
     QGauss<dim>     quadrature_formula(fe->degree + 1);
     QGauss<dim - 1> face_quadrature_formula(fe->degree + 1);
@@ -229,93 +263,59 @@ namespace Step7
       {
         cell_matrix = 0.;
         cell_rhs    = 0.;
-        
- 
+
         fe_values.reinit(cell);
  
         right_hand_side.value_list(fe_values.get_quadrature_points(),
                                    rhs_values);
- 
-        for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
+
+        const double cell_side_length = cell->minimum_vertex_distance();
+
+        for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
           for (unsigned int i = 0; i < dofs_per_cell; ++i)
             {
-              for (unsigned int j = 0; j < dofs_per_cell; ++j)
+              for (unsigned int j = 0; j < dofs_per_cell; ++j){
                 cell_matrix(i, j) +=
                   (fe_values.shape_grad(i, q_point) *     // grad phi_i(x_q)
                       fe_values.shape_grad(j, q_point) *   // grad phi_j(x_q)
                    fe_values.JxW(q_point));                // dx
- 
+              }
  
               cell_rhs(i) += (fe_values.shape_value(i, q_point) * // phi_i(x_q)
                               rhs_values[q_point] *               // f(x_q)
                               fe_values.JxW(q_point));            // dx
             }
- 
-        for (const auto &face : cell->face_iterators())
-          if (face->at_boundary() && (face->boundary_id() == 1))
-            {
+        }
+
+        for (const auto &face : cell->face_iterators()){
+          if (face->at_boundary()){
               fe_face_values.reinit(cell, face);
  
-              for (unsigned int q_point = 0; q_point < n_face_q_points;
-                   ++q_point)
-                {
- 
-                  for (unsigned int i = 0; i < dofs_per_cell; ++i){
-                    for(unsigned int j = 0; j < dofs_per_cell; ++j){
-                    cell_matrix(i,j) +=
-                        ((fe_face_values.shape_value(i, q_point) *
-                        fe_face_values.shape_grad(j, q_point)*
-                        fe_face_values.normal_vector(q_point))+
-                        
-                        (fe_face_values.shape_grad(i, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        (fe_face_values.shape_value(j, q_point)+
-                        fe_face_values.shape_grad(j, q_point)*d -
-                        exact_solution.value(fe_face_values.quadrature_point(q_point)+d))) +
-
-                        alpha *
-                        fe_face_values.shape_value(i, q_point) *
-                        (fe_face_values.shape_value(j, q_point) +
-                        fe_face_values.shape_grad(j, q_point) * d -
-                        exact_solution.value(fe_face_values.quadrature_point(q_point)+d))) *
-
-                        fe_face_values.JxW(q_point);            // dx
-                    }
-                  }
-                }
-            }
-
-            for (const auto &face : cell->face_iterators())
-          if (face->at_boundary() && (face->boundary_id() != 1))
-            {
-              fe_face_values.reinit(cell, face);
- 
-              for (unsigned int q_point = 0; q_point < n_face_q_points;
-                   ++q_point)
-                {
- 
-                  for (unsigned int i = 0; i < dofs_per_cell; ++i){
-                    for(unsigned int j = 0; j < dofs_per_cell; ++j){
-                    cell_matrix(i,j) +=
+              for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
+                for (unsigned int i = 0; i < dofs_per_cell; ++i){
+                  for(unsigned int j = 0; j < dofs_per_cell; ++j){
+                    cell_matrix(i,j) -=
                         (fe_face_values.shape_value(i, q_point) *
                         fe_face_values.shape_grad(j, q_point)*
-                        fe_face_values.normal_vector(q_point)+
-                        
-                        fe_face_values.shape_grad(i, q_point)*
                         fe_face_values.normal_vector(q_point)*
-                        (fe_face_values.shape_value(j, q_point) -
-                        exact_solution.value(fe_face_values.quadrature_point(q_point))) +
+                        fe_face_values.JxW(q_point));
 
-                        alpha *
+                    cell_matrix(i,j) -=
+                        (fe_face_values.shape_grad(i, q_point)*
+                        fe_face_values.normal_vector(q_point)*
+                        (fe_face_values.shape_value(j, q_point) - exact_solution.value(fe_face_values.quadrature_point(q_point)))*
+                        fe_face_values.JxW(q_point));
+
+                    cell_matrix(i,j) +=
+                        ((alpha/cell_side_length) *
                         fe_face_values.shape_value(i, q_point) *
-                        (fe_face_values.shape_value(j, q_point) -
-                        exact_solution.value(fe_face_values.quadrature_point(q_point)))) *
-
-                        fe_face_values.JxW(q_point);            // dx
+                        (fe_face_values.shape_value(j, q_point) - exact_solution.value(fe_face_values.quadrature_point(q_point))) *
+                        fe_face_values.JxW(q_point));
                     }
                   }
                 }
             }
+        }
  
         cell->get_dof_indices(local_dof_indices);
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -348,9 +348,7 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::solve()
   {
-    int iter = 100000;
-    double tol = 1e-12;
-    SolverControl            solver_control(iter, tol);
+    SolverControl            solver_control(10000, 1e-12);
     SolverCG<Vector<double>> cg(solver_control);
  
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
@@ -463,23 +461,22 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::run()
   {
-    Point<2> p1(-1.,-1.);
-    Point<2> p2(1.,1.);
     const unsigned int n_cycles =
       (refinement_mode == global_refinement) ? 5 : 9;
     for (unsigned int cycle = 0; cycle < n_cycles; ++cycle)
       {
         if (cycle == 0)
           {
-            GridGenerator::hyper_rectangle(triangulation, p1, p2);
+            GridGenerator::hyper_cube(triangulation, -1., 1.);
             triangulation.refine_global(3);
 
             for (const auto &cell : triangulation.cell_iterators())
               for (const auto &face : cell->face_iterators())
                 {
                   const auto center = face->center();
-                  if (std::fabs(center(0) - (1.0)) < 1e-12)
+                  if ((std::fabs(center(0) - (-1.0)) < 1e-12) || (std::fabs(center(1) - (-1.0)) < 1e-12) || (std::fabs(center(0) - (1.0)) < 1e-12) || (std::fabs(center(1) - (1.0)) < 1e-12)){
                     face->set_boundary_id(1);
+                  }
                 }
           }
         else
