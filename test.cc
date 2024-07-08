@@ -23,6 +23,7 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/base/convergence_table.h>
 #include <deal.II/fe/fe_values.h>
+#include <deal.II/lac/sparse_direct.h>
  
 #include <array>
 #include <fstream>
@@ -71,17 +72,8 @@ namespace Step7
   template <int dim>
   double Solution<dim>::value(const Point<dim> &p, const unsigned int) const
   {
-    double return_value = 0;
-    for (const auto &center : this->source_centers)
-      {
-        const Tensor<1, dim> x_minus_xi = p - center;
-        return_value +=
-          std::exp(-x_minus_xi.norm_square() / (this->width * this->width));
-      }
- 
-    return return_value;
-    // const double pi = std::acos(-1);
-    // return std::sin(2.0 * pi * p[0]);
+    const double pi = std::acos(-1);
+    return std::sin(2.0 * pi * p[0]);
   }
  
  
@@ -89,26 +81,12 @@ namespace Step7
   Tensor<1, dim> Solution<dim>::gradient(const Point<dim> &p,
                                          const unsigned int) const
   {
-    Tensor<1, dim> return_value;
- 
-    for (const auto &center : this->source_centers)
-      {
-        const Tensor<1, dim> x_minus_xi = p - center;
- 
-        return_value +=
-          (-2. / (this->width * this->width) *
-           std::exp(-x_minus_xi.norm_square() / (this->width * this->width)) *
-           x_minus_xi);
-      }
- 
+    const double pi = std::acos(-1);
+    double arr[2];
+    arr[0] = 2.0 * pi * std::cos(2.0 * pi * p[0]);
+    arr[1] = 0.;
+    Tensor<1, dim> return_value(arr);
     return return_value;
-    // const double pi = std::acos(-1);
-    // double arr[2];
-    // arr[0] = 2.0 * pi * std::cos(2.0 * pi * p[0]);
-    // arr[1] = 0.;
-    // Tensor<1, dim> return_value(arr);
-
-    // return return_value;
   }
  
  
@@ -126,23 +104,8 @@ namespace Step7
   double RightHandSide<dim>::value(const Point<dim> &p,
                                    const unsigned int) const
   {
-    double return_value = 0;
-    for (const auto &center : this->source_centers)
-      {
-        const Tensor<1, dim> x_minus_xi = p - center;
- 
-        return_value +=
-          ((2. * dim -
-            4. * x_minus_xi.norm_square() / (this->width * this->width)) /
-           (this->width * this->width) *
-           std::exp(-x_minus_xi.norm_square() / (this->width * this->width)));
-        return_value +=
-          std::exp(-x_minus_xi.norm_square() / (this->width * this->width));
-      }
- 
-    return return_value;
-    // const double pi = std::acos(-1);
-    // return (4.0 * pi * pi + 1.0) * std::sin(2.0 * pi * p[0]);
+    const double pi = std::acos(-1);
+    return (4.0 * pi * pi) * std::sin(2.0 * pi * p[0]);
   }
  
  
@@ -187,9 +150,6 @@ namespace Step7
     ConvergenceTable convergence_table;
   };
  
- 
- 
- 
   template <int dim>
   HelmholtzProblem<dim>::HelmholtzProblem(const FiniteElement<dim> &fe,
                                           const RefinementMode refinement_mode)
@@ -228,7 +188,7 @@ namespace Step7
   void HelmholtzProblem<dim>::assemble_system()
   {
 
-    double alpha = 20.0;
+    double alpha = (fe->degree +1) * (fe->degree);
 
     QGauss<dim>     quadrature_formula(fe->degree + 1);
     QGauss<dim - 1> face_quadrature_formula(fe->degree + 1);
@@ -303,15 +263,26 @@ namespace Step7
                     cell_matrix(i,j) -=
                         (fe_face_values.shape_grad(i, q_point)*
                         fe_face_values.normal_vector(q_point)*
-                        (fe_face_values.shape_value(j, q_point) - exact_solution.value(fe_face_values.quadrature_point(q_point)))*
+                        fe_face_values.shape_value(j, q_point)*
                         fe_face_values.JxW(q_point));
 
                     cell_matrix(i,j) +=
                         ((alpha/cell_side_length) *
                         fe_face_values.shape_value(i, q_point) *
-                        (fe_face_values.shape_value(j, q_point) - exact_solution.value(fe_face_values.quadrature_point(q_point))) *
+                        (fe_face_values.shape_value(j, q_point)) *
                         fe_face_values.JxW(q_point));
                     }
+                    
+                  cell_rhs(i) += ((alpha/cell_side_length) *
+                                  exact_solution.value(fe_face_values.quadrature_point(q_point))*
+                                  fe_face_values.shape_value(i, q_point)*
+                                  fe_face_values.JxW(q_point));
+
+                  cell_rhs(i) -= 
+                        (fe_face_values.shape_grad(i, q_point)*
+                        fe_face_values.normal_vector(q_point)*
+                        exact_solution.value(fe_face_values.quadrature_point(q_point))*
+                        fe_face_values.JxW(q_point));
                   }
                 }
             }
@@ -328,19 +299,6 @@ namespace Step7
             system_rhs(local_dof_indices[i]) += cell_rhs(i);
           }
       }
- 
-    hanging_node_constraints.condense(system_matrix);
-    hanging_node_constraints.condense(system_rhs);
- 
-    std::map<types::global_dof_index, double> boundary_values;
-    VectorTools::interpolate_boundary_values(dof_handler,
-                                             0,
-                                             Solution<dim>(),
-                                             boundary_values);
-    MatrixTools::apply_boundary_values(boundary_values,
-                                       system_matrix,
-                                       solution,
-                                       system_rhs);
   }
  
  
@@ -348,15 +306,9 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::solve()
   {
-    SolverControl            solver_control(10000, 1e-12);
-    SolverCG<Vector<double>> cg(solver_control);
- 
-    PreconditionSSOR<SparseMatrix<double>> preconditioner;
-    preconditioner.initialize(system_matrix, 1.2);
- 
-    cg.solve(system_matrix, solution, system_rhs, preconditioner);
- 
-    hanging_node_constraints.distribute(solution);
+    SparseDirectUMFPACK solver;
+    solver.initialize(system_matrix);
+    solver.vmult(solution,system_rhs);
   }
  
  
@@ -462,7 +414,7 @@ namespace Step7
   void HelmholtzProblem<dim>::run()
   {
     const unsigned int n_cycles =
-      (refinement_mode == global_refinement) ? 5 : 9;
+      (refinement_mode == global_refinement) ? 5 : 5;
     for (unsigned int cycle = 0; cycle < n_cycles; ++cycle)
       {
         if (cycle == 0)
@@ -648,22 +600,6 @@ int main()
       using namespace Step7;
  
       {
-        std::cout << "Solving with Q1 elements, adaptive refinement"
-                  << std::endl
-                  << "============================================="
-                  << std::endl
-                  << std::endl;
- 
-        FE_Q<dim>             fe(1);
-        HelmholtzProblem<dim> helmholtz_problem_2d(
-          fe, HelmholtzProblem<dim>::adaptive_refinement);
- 
-        helmholtz_problem_2d.run();
- 
-        std::cout << std::endl;
-      }
- 
-      {
         std::cout << "Solving with Q1 elements, global refinement" << std::endl
                   << "===========================================" << std::endl
                   << std::endl;
@@ -677,33 +613,6 @@ int main()
         std::cout << std::endl;
       }
  
-      {
-        std::cout << "Solving with Q2 elements, global refinement" << std::endl
-                  << "===========================================" << std::endl
-                  << std::endl;
- 
-        FE_Q<dim>             fe(2);
-        HelmholtzProblem<dim> helmholtz_problem_2d(
-          fe, HelmholtzProblem<dim>::global_refinement);
- 
-        helmholtz_problem_2d.run();
- 
-        std::cout << std::endl;
-      }
-      {
-        std::cout << "Solving with Q2 elements, adaptive refinement"
-                  << std::endl
-                  << "===========================================" << std::endl
-                  << std::endl;
- 
-        FE_Q<dim>             fe(2);
-        HelmholtzProblem<dim> helmholtz_problem_2d(
-          fe, HelmholtzProblem<dim>::adaptive_refinement);
- 
-        helmholtz_problem_2d.run();
- 
-        std::cout << std::endl;
-      }
     }
   catch (std::exception &exc)
     {
