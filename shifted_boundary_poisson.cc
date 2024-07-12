@@ -432,7 +432,7 @@ namespace Step7
                   cell_rhs(i) -= 
                         (fe_face_values.shape_grad(i, q_point)*   //phi_i(x_q)
                         fe_face_values.normal_vector(q_point)*    // n(x_q)
-                        exact_solution.value(fe_face_values.quadrature_point(q_point))* // u_D(x_q) (Dirichlet boundary function)
+                        exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(boundary_id))* // u_D(x_q) (Dirichlet boundary function)
                         fe_face_values.JxW(q_point));
                   
 
@@ -440,7 +440,7 @@ namespace Step7
                                   ( fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                                     fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
                                     distance_vector_to_boundary(boundary_id))*  // d(x_q)
-                                  exact_solution.value(fe_face_values.quadrature_point(q_point))* // u_D(x_q) (Dirichlet boundary function)
+                                  exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(boundary_id))* // u_D(x_q) (Dirichlet boundary function)
                                   fe_face_values.JxW(q_point));
                   }
                 }
