@@ -385,7 +385,7 @@ namespace Step7
         }
         // face iteration on cell
         for (const auto &face : cell->face_iterators()){
-          if (face->at_boundary()){
+          if ((face->at_boundary()) && ((face->boundary_id() == 1) || (face->boundary_id() == 2))){
               fe_face_values.reinit(cell, face);
               const int boundary_id = face->boundary_id();
  
@@ -444,6 +444,43 @@ namespace Step7
                                   fe_face_values.JxW(q_point));
                   }
                 }
+            }else{
+              fe_face_values.reinit(cell, face);
+ 
+              for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
+                for (unsigned int i = 0; i < dofs_per_cell; ++i){
+                  for(unsigned int j = 0; j < dofs_per_cell; ++j){
+                    cell_matrix(i,j) -=
+                        (fe_face_values.shape_value(i, q_point) *
+                        fe_face_values.shape_grad(j, q_point)*
+                        fe_face_values.normal_vector(q_point)*
+                        fe_face_values.JxW(q_point));
+
+                    cell_matrix(i,j) -=
+                        (fe_face_values.shape_grad(i, q_point)*
+                        fe_face_values.normal_vector(q_point)*
+                        fe_face_values.shape_value(j, q_point)*
+                        fe_face_values.JxW(q_point));
+
+                    cell_matrix(i,j) +=
+                        ((alpha/cell_side_length) *
+                        fe_face_values.shape_value(i, q_point) *
+                        (fe_face_values.shape_value(j, q_point)) *
+                        fe_face_values.JxW(q_point));
+                    }
+                    
+                  cell_rhs(i) += ((alpha/cell_side_length) *
+                                  exact_solution.value(fe_face_values.quadrature_point(q_point))*
+                                  fe_face_values.shape_value(i, q_point)*
+                                  fe_face_values.JxW(q_point));
+
+                  cell_rhs(i) -= 
+                        (fe_face_values.shape_grad(i, q_point)*
+                        fe_face_values.normal_vector(q_point)*
+                        exact_solution.value(fe_face_values.quadrature_point(q_point))*
+                        fe_face_values.JxW(q_point));
+                }
+              }
             }
         }
  
