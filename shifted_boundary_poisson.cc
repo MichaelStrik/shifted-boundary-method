@@ -186,14 +186,21 @@ namespace Step7
   template <int dim>
   const Tensor<1,dim> HelmholtzProblem<dim>::distance_vector_to_boundary(int boundary_id) {
     Tensor<1,dim> distance_vector;
+    double cell_side_length;
+
+    for (const auto &cell : dof_handler.active_cell_iterators()){
+        cell_side_length = cell->minimum_vertex_distance();
+        break;
+    }
+
 
     if (boundary_id == 1)
     {
-      distance_vector[0] = -1;
+      distance_vector[0] = -1.0 * cell_side_length;
     }
     else if (boundary_id == 2)
     {
-      distance_vector[0] =  1;
+      distance_vector[0] =  1.0 * cell_side_length;
     }
 
     return distance_vector;
@@ -444,43 +451,6 @@ namespace Step7
                                   fe_face_values.JxW(q_point));
                   }
                 }
-            }else{
-              fe_face_values.reinit(cell, face);
- 
-              for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
-                for (unsigned int i = 0; i < dofs_per_cell; ++i){
-                  for(unsigned int j = 0; j < dofs_per_cell; ++j){
-                    cell_matrix(i,j) -=
-                        (fe_face_values.shape_value(i, q_point) *
-                        fe_face_values.shape_grad(j, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        fe_face_values.JxW(q_point));
-
-                    cell_matrix(i,j) -=
-                        (fe_face_values.shape_grad(i, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        fe_face_values.shape_value(j, q_point)*
-                        fe_face_values.JxW(q_point));
-
-                    cell_matrix(i,j) +=
-                        ((alpha/cell_side_length) *
-                        fe_face_values.shape_value(i, q_point) *
-                        (fe_face_values.shape_value(j, q_point)) *
-                        fe_face_values.JxW(q_point));
-                    }
-                    
-                  cell_rhs(i) += ((alpha/cell_side_length) *
-                                  exact_solution.value(fe_face_values.quadrature_point(q_point))*
-                                  fe_face_values.shape_value(i, q_point)*
-                                  fe_face_values.JxW(q_point));
-
-                  cell_rhs(i) -= 
-                        (fe_face_values.shape_grad(i, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        exact_solution.value(fe_face_values.quadrature_point(q_point))*
-                        fe_face_values.JxW(q_point));
-                }
-              }
             }
         }
  
