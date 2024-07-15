@@ -39,30 +39,9 @@ namespace Step7
   using namespace dealii;
  
  
-  template <int dim>
-  class SolutionBase
-  {
-  protected:
-    static const std::array<Point<dim>, 3> source_centers;
-    static const double                    width;
-  };
- 
- 
-  template <>
-  const std::array<Point<1>, 3> SolutionBase<1>::source_centers = {
-    {Point<1>(-1.0 / 3.0), Point<1>(0.0), Point<1>(+1.0 / 3.0)}};
- 
-  template <>
-  const std::array<Point<2>, 3> SolutionBase<2>::source_centers = {
-    {Point<2>(-0.5, +0.5), Point<2>(-0.5, -0.5), Point<2>(+0.5, -0.5)}};
  
   template <int dim>
-  const double SolutionBase<dim>::width = 1. / 8.;
- 
- 
- 
-  template <int dim>
-  class Solution : public Function<dim>, protected SolutionBase<dim>
+  class Solution : public Function<dim>
   {
   public:
     virtual double value(const Point<dim> & p,
@@ -97,7 +76,7 @@ namespace Step7
  
  
   template <int dim>
-  class RightHandSide : public Function<dim>, protected SolutionBase<dim>
+  class RightHandSide : public Function<dim>
   {
   public:
     virtual double value(const Point<dim> & p,
@@ -148,8 +127,6 @@ namespace Step7
  
     SmartPointer<const FiniteElement<dim>> fe;
  
-    AffineConstraints<double> hanging_node_constraints;
- 
     SparsityPattern      sparsity_pattern;
     SparseMatrix<double> system_matrix;
  
@@ -181,8 +158,6 @@ namespace Step7
   template <int dim>
     void HelmholtzProblem<dim>::setup_discrete_level_set()
     {
-      //std::cout << "Setting up discrete level set function" << std::endl;
-  
       level_set_dof_handler.distribute_dofs(fe_level_set);
       level_set.reinit(level_set_dof_handler.n_dofs());
   
@@ -224,14 +199,8 @@ namespace Step7
     dof_handler.distribute_dofs(*fe);
     DoFRenumbering::Cuthill_McKee(dof_handler);
  
-    hanging_node_constraints.clear();
-    DoFTools::make_hanging_node_constraints(dof_handler,
-                                            hanging_node_constraints);
-    hanging_node_constraints.close();
- 
     DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
     DoFTools::make_sparsity_pattern(dof_handler, dsp);
-    hanging_node_constraints.condense(dsp);
     sparsity_pattern.copy_from(dsp);
  
     system_matrix.reinit(sparsity_pattern);
@@ -252,126 +221,6 @@ namespace Step7
 
     return distance_vector;
   }
- 
-  // Nitsche method
-  /* template <int dim>
-  void HelmholtzProblem<dim>::assemble_system()
-  { 
-
-    double alpha = (fe->degree +1) * (fe->degree);
-
-    QGauss<dim>     quadrature_formula(fe->degree + 1);
-    QGauss<dim - 1> face_quadrature_formula(fe->degree + 1);
- 
-    const unsigned int n_q_points      = quadrature_formula.size();
-    const unsigned int n_face_q_points = face_quadrature_formula.size();
- 
-    const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
- 
-    FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double>     cell_rhs(dofs_per_cell);
- 
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
- 
-    FEValues<dim> fe_values(*fe,
-                            quadrature_formula,
-                            update_values | update_gradients |
-                              update_quadrature_points | update_JxW_values);
- 
-    FEFaceValues<dim> fe_face_values(*fe,
-                                     face_quadrature_formula,
-                                     update_values | update_quadrature_points |
-                                       update_normal_vectors |
-                                       update_JxW_values | update_gradients);
- 
-    RightHandSide<dim>  right_hand_side;
-    std::vector<double> rhs_values(n_q_points);
- 
-    Solution<dim> exact_solution;
- 
-    // cell iteration
-    for (const auto &cell : dof_handler.active_cell_iterators())
-      {
-        cell_matrix = 0.;
-        cell_rhs    = 0.;
-
-        fe_values.reinit(cell);
- 
-        right_hand_side.value_list(fe_values.get_quadrature_points(),
-                                   rhs_values);
-
-        const double cell_side_length = cell->minimum_vertex_distance();
-        // quadrature point iteration on cell
-        for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
-          for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            {
-              for (unsigned int j = 0; j < dofs_per_cell; ++j){
-                cell_matrix(i, j) +=
-                  (fe_values.shape_grad(i, q_point) *     // grad phi_i(x_q)
-                      fe_values.shape_grad(j, q_point) *   // grad phi_j(x_q)
-                   fe_values.JxW(q_point));                // dx
-              }
- 
-              cell_rhs(i) += (fe_values.shape_value(i, q_point) * // phi_i(x_q)
-                              rhs_values[q_point] *               // f(x_q)
-                              fe_values.JxW(q_point));            // dx
-            }
-        }
-        // face iteration on cell
-        for (const auto &face : cell->face_iterators()){
-          if (face->at_boundary()){
-              fe_face_values.reinit(cell, face);
- 
-              for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
-                for (unsigned int i = 0; i < dofs_per_cell; ++i){
-                  for(unsigned int j = 0; j < dofs_per_cell; ++j){
-                    cell_matrix(i,j) -=
-                        (fe_face_values.shape_value(i, q_point) *
-                        fe_face_values.shape_grad(j, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        fe_face_values.JxW(q_point));
-
-                    cell_matrix(i,j) -=
-                        (fe_face_values.shape_grad(i, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        fe_face_values.shape_value(j, q_point)*
-                        fe_face_values.JxW(q_point));
-
-                    cell_matrix(i,j) +=
-                        ((alpha/cell_side_length) *
-                        fe_face_values.shape_value(i, q_point) *
-                        (fe_face_values.shape_value(j, q_point)) *
-                        fe_face_values.JxW(q_point));
-                    }
-                    
-                  cell_rhs(i) += ((alpha/cell_side_length) *
-                                  exact_solution.value(fe_face_values.quadrature_point(q_point))*
-                                  fe_face_values.shape_value(i, q_point)*
-                                  fe_face_values.JxW(q_point));
-
-                  cell_rhs(i) -= 
-                        (fe_face_values.shape_grad(i, q_point)*
-                        fe_face_values.normal_vector(q_point)*
-                        exact_solution.value(fe_face_values.quadrature_point(q_point))*
-                        fe_face_values.JxW(q_point));
-                  }
-                }
-            }
-        }
- 
-        // write system matrix and rhs
-        cell->get_dof_indices(local_dof_indices);
-        for (unsigned int i = 0; i < dofs_per_cell; ++i)
-          {
-            for (unsigned int j = 0; j < dofs_per_cell; ++j)
-              system_matrix.add(local_dof_indices[i],
-                                local_dof_indices[j],
-                                cell_matrix(i, j));
- 
-            system_rhs(local_dof_indices[i]) += cell_rhs(i);
-          }
-      }
-  } */
  
   // shifted boundary method
   template <int dim>
@@ -408,10 +257,14 @@ namespace Step7
     std::vector<double> rhs_values(n_q_points);
  
     Solution<dim> exact_solution;
+
  
     // cell iteration
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if(mesh_classifier.location_to_level_set(cell) != NonMatching::LocationToLevelSet::inside){
+          continue;
+        }
         cell_matrix = 0.;
         cell_rhs    = 0.;
 
@@ -443,12 +296,29 @@ namespace Step7
           if ((at_surrogate_boundary(cell,cell->face_iterator_to_index(face)))){
  
               for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
+                
+                Tensor<1,dim> true_normal = fe_face_values.quadrature_point(q_point);
+                double abs = std::sqrt(true_normal[0]*true_normal[0]+true_normal[1]*true_normal[1]);
+                true_normal[0] = true_normal[0]/abs;
+                true_normal[1] = true_normal[1]/abs;
+
+                Tensor<1,dim> tangential_vector = true_normal;
+                double tmp = tangential_vector[0];
+                tangential_vector[0] = tangential_vector[1];
+                tangential_vector[1] = -1.0 * tmp;
+                abs = std::sqrt(tangential_vector[0]*tangential_vector[0]+tangential_vector[1]*tangential_vector[1]);
+                tangential_vector[0] = tangential_vector[0]/abs;
+                tangential_vector[1] = tangential_vector[1]/abs;
+
+                Tensor<1,dim> d = distance_vector_to_boundary(fe_face_values.quadrature_point(q_point));
+                abs = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+
                 for (unsigned int i = 0; i < dofs_per_cell; ++i){
                   for(unsigned int j = 0; j < dofs_per_cell; ++j){
                     cell_matrix(i,j) -=
                         ((fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                           fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
-                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))* // d(x_q)
+                          d)* // d(x_q)
                         fe_face_values.shape_grad(j, q_point)*      // grad phi_j(x_q)
                         fe_face_values.normal_vector(q_point)*      // n(x_q)
                         fe_face_values.JxW(q_point));               // Jacobian (trafo)
@@ -458,49 +328,58 @@ namespace Step7
                         fe_face_values.normal_vector(q_point)*      // n(x_q)
                         ( fe_face_values.shape_value(j, q_point)+     // phi_j(x_q)
                           fe_face_values.shape_grad(j, q_point)*      // grad phi_j(x_q)
-                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*   // d(x_q)
+                          d)*   // d(x_q)
                         fe_face_values.JxW(q_point));
 
                     cell_matrix(i,j) +=
                         (fe_face_values.shape_grad(i, q_point)*    // grad phi_i(x_q)
-                        distance_vector_to_boundary(fe_face_values.quadrature_point(q_point))*  // d(x_q)
+                        d*  // d(x_q)
+                        ((fe_face_values.normal_vector(q_point)*      // n(x_q)
+                        true_normal)/abs) *
                         fe_face_values.shape_grad(j, q_point)*     // grad phi_j(x_q)
-                        fe_face_values.normal_vector(q_point)*      // n(x_q)
+                        d*
                         fe_face_values.JxW(q_point));
-
 
                     cell_matrix(i,j) +=
                         ((alpha/cell_side_length) *                 // penalty/Nitsche-parameter over h
                         ( fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                           fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
-                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*  // d(x_q)
+                          d)*  // d(x_q)
                         ( fe_face_values.shape_value(j, q_point)+     // phi_j(x_q)
                           fe_face_values.shape_grad(j, q_point)*      // grad phi_j(x_q)
-                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*  // d(x_q)
+                          d)*  // d(x_q)
                         fe_face_values.JxW(q_point));
-                    
                     }
                     
                   
                   cell_rhs(i) -= 
                         (fe_face_values.shape_grad(i, q_point)*   //phi_i(x_q)
                         fe_face_values.normal_vector(q_point)*    // n(x_q)
-                        exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))* // u_D(x_q) (Dirichlet boundary function)
+                        exact_solution.value(fe_face_values.quadrature_point(q_point)+d)* // u_D(x_q) (Dirichlet boundary function)
+                        fe_face_values.JxW(q_point));
+
+                  cell_rhs(i) -=
+                        (fe_face_values.shape_grad(i, q_point)*
+                        d*
+                        (exact_solution.gradient(fe_face_values.quadrature_point(q_point)+d)*
+                        tangential_vector)*
+                        tangential_vector*
+                        fe_face_values.normal_vector(q_point)*
                         fe_face_values.JxW(q_point));
                   
 
                   cell_rhs(i) += ((alpha/cell_side_length) *    // penalty/Nitsche-parameter
                                   ( fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                                     fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
-                                    distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*  // d(x_q)
-                                  exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))* // u_D(x_q) (Dirichlet boundary function)
+                                    d)*  // d(x_q)
+                                  exact_solution.value(fe_face_values.quadrature_point(q_point)+d)* // u_D(x_q) (Dirichlet boundary function)
                                   fe_face_values.JxW(q_point));
                   }
                 }
             
             }
         }
- 
+        
         // write system matrix and rhs
         cell->get_dof_indices(local_dof_indices);
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -518,22 +397,14 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::solve()
   {
+    // SparseDirectUMFPACK solver;
+    // solver.initialize(system_matrix);
+    // solver.vmult(solution,system_rhs);
 
-    SparseDirectUMFPACK solver;
-    solver.initialize(system_matrix);
-    solver.vmult(solution,system_rhs);
+    SolverControl solver_control(10000, 1e-12);
+    SolverCG<>    cg(solver_control);
 
-
-    // SolverControl solver_control(1000, 1e-12);
-    // SolverCG<>    cg(solver_control);
-
-    // PreconditionSSOR<> preconditioner;
-    // preconditioner.initialize(system_matrix, 1.2);
-
-    // cg.solve(system_matrix, solution, system_rhs, preconditioner);
-
-    // hanging_node_constraints.distribute(solution);
-
+    cg.solve(system_matrix, solution, system_rhs, PreconditionIdentity());
   }
  
  
@@ -583,9 +454,9 @@ namespace Step7
   {
     const double L2_error = compute_L2_error();
  
-    const double H1_error = 0;
+    // const double H1_error = 0;
 
-    const double Linfty_error = 0;
+    // const double Linfty_error = 0;
     const unsigned int n_active_cells = triangulation.n_active_cells();
     const unsigned int n_dofs         = dof_handler.n_dofs();
  
@@ -598,8 +469,8 @@ namespace Step7
     convergence_table.add_value("cells", n_active_cells);
     convergence_table.add_value("dofs", n_dofs);
     convergence_table.add_value("L2", L2_error);
-    convergence_table.add_value("H1", H1_error);
-    convergence_table.add_value("Linfty", Linfty_error);
+    // convergence_table.add_value("H1", H1_error);
+    // convergence_table.add_value("Linfty", Linfty_error);
   }
 
   template <int dim>
@@ -653,34 +524,6 @@ namespace Step7
           {
             GridGenerator::hyper_cube(triangulation, -1., 1.);
             triangulation.refine_global(3);
-
-            for (const auto &cell : triangulation.cell_iterators())
-              for (const auto &face : cell->face_iterators())
-                {
-                  const auto center = face->center();
-                  
-                  
-                  if (std::fabs(center(0) - (-1.0)) < 1e-12){
-                    // left boundary
-                    face->set_boundary_id(1);
-                  }
-
-                  else if (std::fabs(center(0) - (1.0)) < 1e-12) {
-                    // right boundary
-                    face->set_boundary_id(2);
-                  }
-
-                  else if (std::fabs(center(1) - (-1.0)) < 1e-12) {
-                    // bottom boundary
-                    face->set_boundary_id(3);
-                  }
-
-                  else if (std::fabs(center(1) - (1.0)) < 1e-12) {
-                    // top boundary
-                    face->set_boundary_id(4);
-                  }
-                  
-                }
           }
         else
           refine_grid();
@@ -742,24 +585,24 @@ namespace Step7
  
  
     convergence_table.set_precision("L2", 3);
-    convergence_table.set_precision("H1", 3);
-    convergence_table.set_precision("Linfty", 3);
+    // convergence_table.set_precision("H1", 3);
+    // convergence_table.set_precision("Linfty", 3);
  
     convergence_table.set_scientific("L2", true);
-    convergence_table.set_scientific("H1", true);
-    convergence_table.set_scientific("Linfty", true);
+    // convergence_table.set_scientific("H1", true);
+    // convergence_table.set_scientific("Linfty", true);
  
     convergence_table.set_tex_caption("cells", "\\# cells");
     convergence_table.set_tex_caption("dofs", "\\# dofs");
     convergence_table.set_tex_caption("L2", "@f$L^2@f$-error");
-    convergence_table.set_tex_caption("H1", "@f$H^1@f$-error");
-    convergence_table.set_tex_caption("Linfty", "@f$L^\\infty@f$-error");
+    // convergence_table.set_tex_caption("H1", "@f$H^1@f$-error");
+    // convergence_table.set_tex_caption("Linfty", "@f$L^\\infty@f$-error");
  
     convergence_table.set_tex_format("cells", "r");
     convergence_table.set_tex_format("dofs", "r");
  
     std::cout << std::endl;
-    convergence_table.write_text(std::cout);
+    // convergence_table.write_text(std::cout);
  
     std::string error_filename = "error";
     switch (refinement_mode)
@@ -800,7 +643,7 @@ namespace Step7
  
         std::vector<std::string> new_order;
         new_order.emplace_back("n cells");
-        new_order.emplace_back("H1");
+        // new_order.emplace_back("H1");
         new_order.emplace_back("L2");
         convergence_table.set_column_order(new_order);
  
@@ -808,10 +651,10 @@ namespace Step7
           "L2", ConvergenceTable::reduction_rate);
         convergence_table.evaluate_convergence_rates(
           "L2", ConvergenceTable::reduction_rate_log2);
-        convergence_table.evaluate_convergence_rates(
-          "H1", ConvergenceTable::reduction_rate);
-        convergence_table.evaluate_convergence_rates(
-          "H1", ConvergenceTable::reduction_rate_log2);
+        // convergence_table.evaluate_convergence_rates(
+        //   "H1", ConvergenceTable::reduction_rate);
+        // convergence_table.evaluate_convergence_rates(
+        //   "H1", ConvergenceTable::reduction_rate_log2);
  
         std::cout << std::endl;
         convergence_table.write_text(std::cout);
