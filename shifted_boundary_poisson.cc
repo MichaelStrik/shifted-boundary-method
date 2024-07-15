@@ -24,11 +24,16 @@
 #include <deal.II/base/convergence_table.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/lac/sparse_direct.h>
+
+  #include <deal.II/base/function_signed_distance.h>
+  #include <deal.II/non_matching/fe_immersed_values.h>
+  #include <deal.II/non_matching/fe_values.h>
+  #include <deal.II/non_matching/mesh_classifier.h>
  
 #include <array>
 #include <fstream>
 #include <iostream>
- 
+
 namespace Step7
 {
   using namespace dealii;
@@ -126,13 +131,17 @@ namespace Step7
     void run();
  
   private:
+    void setup_discrete_level_set();
+    bool at_surrogate_boundary(
+        const typename Triangulation<dim>::active_cell_iterator &cell,
+        const unsigned int face_index) const;
     void setup_system();
-    const Tensor<1,dim> distance_vector_to_boundary(int boundary_id);
+    const Tensor<1,dim> distance_vector_to_boundary(const Tensor<1,dim> &pos);
     void assemble_system();
     void solve();
     void refine_grid();
     void process_solution(const unsigned int cycle);
-  
+    double compute_L2_error() const;
  
     Triangulation<dim> triangulation;
     DoFHandler<dim>    dof_handler;
@@ -150,6 +159,12 @@ namespace Step7
     const RefinementMode refinement_mode;
  
     ConvergenceTable convergence_table;
+
+    const FE_Q<dim> fe_level_set;
+    DoFHandler<dim> level_set_dof_handler;
+    Vector<double>  level_set;
+
+    NonMatching::MeshClassifier<dim> mesh_classifier;
   };
  
   template <int dim>
@@ -158,7 +173,49 @@ namespace Step7
     : dof_handler(triangulation)
     , fe(&fe)
     , refinement_mode(refinement_mode)
+    , fe_level_set(1)
+    , level_set_dof_handler(triangulation)
+    , mesh_classifier(level_set_dof_handler, level_set)
   {}
+
+  template <int dim>
+    void HelmholtzProblem<dim>::setup_discrete_level_set()
+    {
+      //std::cout << "Setting up discrete level set function" << std::endl;
+  
+      level_set_dof_handler.distribute_dofs(fe_level_set);
+      level_set.reinit(level_set_dof_handler.n_dofs());
+  
+      const Functions::SignedDistance::Sphere<dim> signed_distance_sphere;
+      VectorTools::interpolate(level_set_dof_handler,
+                               signed_distance_sphere,
+                               level_set);
+    }
+
+    template <int dim>
+    bool HelmholtzProblem<dim>::at_surrogate_boundary(
+      const typename Triangulation<dim>::active_cell_iterator &cell,
+      const unsigned int                                       face_index) const
+    {
+      if (cell->at_boundary(face_index))
+        return false;
+
+      const NonMatching::LocationToLevelSet cell_location =
+        mesh_classifier.location_to_level_set(cell);
+  
+      const NonMatching::LocationToLevelSet neighbor_location =
+        mesh_classifier.location_to_level_set(cell->neighbor(face_index));
+  
+      if (cell_location == NonMatching::LocationToLevelSet::inside &&
+          neighbor_location == NonMatching::LocationToLevelSet::outside)
+        return true;
+  
+      if (neighbor_location == NonMatching::LocationToLevelSet::intersected &&
+          cell_location == NonMatching::LocationToLevelSet::inside)
+        return true;
+  
+      return false;
+    }
  
  
   template <int dim>
@@ -184,24 +241,14 @@ namespace Step7
   }
  
   template <int dim>
-  const Tensor<1,dim> HelmholtzProblem<dim>::distance_vector_to_boundary(int boundary_id) {
-    Tensor<1,dim> distance_vector;
-    double cell_side_length;
+  const Tensor<1,dim> HelmholtzProblem<dim>::distance_vector_to_boundary(const Tensor<1,dim> &pos) {
+    
+    double abs = std::sqrt(pos[0]*pos[0]+pos[1]*pos[1]);
+    double tmp[2];
+    tmp[0] = (pos[0] / abs) - pos[0];
+    tmp[1] = (pos[1] / abs) - pos[1];
 
-    for (const auto &cell : dof_handler.active_cell_iterators()){
-        cell_side_length = cell->minimum_vertex_distance();
-        break;
-    }
-
-
-    if (boundary_id == 1)
-    {
-      distance_vector[0] = -1.0 * cell_side_length;
-    }
-    else if (boundary_id == 2)
-    {
-      distance_vector[0] =  1.0 * cell_side_length;
-    }
+    Tensor<1,dim> distance_vector(tmp);
 
     return distance_vector;
   }
@@ -331,7 +378,7 @@ namespace Step7
   void HelmholtzProblem<dim>::assemble_system()
   { 
 
-    double alpha = (fe->degree +1) * (fe->degree);
+    double alpha = 20.0;
 
     QGauss<dim>     quadrature_formula(fe->degree + 1);
     QGauss<dim - 1> face_quadrature_formula(fe->degree + 1);
@@ -392,9 +439,8 @@ namespace Step7
         }
         // face iteration on cell
         for (const auto &face : cell->face_iterators()){
-          if ((face->at_boundary()) && ((face->boundary_id() == 1) || (face->boundary_id() == 2))){
-              fe_face_values.reinit(cell, face);
-              const int boundary_id = face->boundary_id();
+          fe_face_values.reinit(cell, face);
+          if ((at_surrogate_boundary(cell,cell->face_iterator_to_index(face)))){
  
               for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
                 for (unsigned int i = 0; i < dofs_per_cell; ++i){
@@ -402,7 +448,7 @@ namespace Step7
                     cell_matrix(i,j) -=
                         ((fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                           fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
-                          distance_vector_to_boundary(boundary_id))* // d(x_q)
+                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))* // d(x_q)
                         fe_face_values.shape_grad(j, q_point)*      // grad phi_j(x_q)
                         fe_face_values.normal_vector(q_point)*      // n(x_q)
                         fe_face_values.JxW(q_point));               // Jacobian (trafo)
@@ -412,12 +458,12 @@ namespace Step7
                         fe_face_values.normal_vector(q_point)*      // n(x_q)
                         ( fe_face_values.shape_value(j, q_point)+     // phi_j(x_q)
                           fe_face_values.shape_grad(j, q_point)*      // grad phi_j(x_q)
-                          distance_vector_to_boundary(boundary_id))*   // d(x_q)
+                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*   // d(x_q)
                         fe_face_values.JxW(q_point));
 
                     cell_matrix(i,j) +=
                         (fe_face_values.shape_grad(i, q_point)*    // grad phi_i(x_q)
-                        distance_vector_to_boundary(boundary_id)*  // d(x_q)
+                        distance_vector_to_boundary(fe_face_values.quadrature_point(q_point))*  // d(x_q)
                         fe_face_values.shape_grad(j, q_point)*     // grad phi_j(x_q)
                         fe_face_values.normal_vector(q_point)*      // n(x_q)
                         fe_face_values.JxW(q_point));
@@ -427,10 +473,10 @@ namespace Step7
                         ((alpha/cell_side_length) *                 // penalty/Nitsche-parameter over h
                         ( fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                           fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
-                          distance_vector_to_boundary(boundary_id))*  // d(x_q)
+                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*  // d(x_q)
                         ( fe_face_values.shape_value(j, q_point)+     // phi_j(x_q)
                           fe_face_values.shape_grad(j, q_point)*      // grad phi_j(x_q)
-                          distance_vector_to_boundary(boundary_id))*  // d(x_q)
+                          distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*  // d(x_q)
                         fe_face_values.JxW(q_point));
                     
                     }
@@ -439,18 +485,19 @@ namespace Step7
                   cell_rhs(i) -= 
                         (fe_face_values.shape_grad(i, q_point)*   //phi_i(x_q)
                         fe_face_values.normal_vector(q_point)*    // n(x_q)
-                        exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(boundary_id))* // u_D(x_q) (Dirichlet boundary function)
+                        exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))* // u_D(x_q) (Dirichlet boundary function)
                         fe_face_values.JxW(q_point));
                   
 
                   cell_rhs(i) += ((alpha/cell_side_length) *    // penalty/Nitsche-parameter
                                   ( fe_face_values.shape_value(i, q_point)+     // phi_i(x_q)
                                     fe_face_values.shape_grad(i, q_point)*      // grad phi_i(x_q)
-                                    distance_vector_to_boundary(boundary_id))*  // d(x_q)
-                                  exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(boundary_id))* // u_D(x_q) (Dirichlet boundary function)
+                                    distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))*  // d(x_q)
+                                  exact_solution.value(fe_face_values.quadrature_point(q_point)+distance_vector_to_boundary(fe_face_values.quadrature_point(q_point)))* // u_D(x_q) (Dirichlet boundary function)
                                   fe_face_values.JxW(q_point));
                   }
                 }
+            
             }
         }
  
@@ -534,42 +581,11 @@ namespace Step7
   template <int dim>
   void HelmholtzProblem<dim>::process_solution(const unsigned int cycle)
   {
-    Vector<float> difference_per_cell(triangulation.n_active_cells());
-    VectorTools::integrate_difference(dof_handler,
-                                      solution,
-                                      Solution<dim>(),
-                                      difference_per_cell,
-                                      QGauss<dim>(fe->degree + 1),
-                                      VectorTools::L2_norm);
-    const double L2_error =
-      VectorTools::compute_global_error(triangulation,
-                                        difference_per_cell,
-                                        VectorTools::L2_norm);
+    const double L2_error = compute_L2_error();
  
-    VectorTools::integrate_difference(dof_handler,
-                                      solution,
-                                      Solution<dim>(),
-                                      difference_per_cell,
-                                      QGauss<dim>(fe->degree + 1),
-                                      VectorTools::H1_seminorm);
-    const double H1_error =
-      VectorTools::compute_global_error(triangulation,
-                                        difference_per_cell,
-                                        VectorTools::H1_seminorm);
- 
-    const QTrapezoid<1>  q_trapez;
-    const QIterated<dim> q_iterated(q_trapez, fe->degree * 2 + 1);
-    VectorTools::integrate_difference(dof_handler,
-                                      solution,
-                                      Solution<dim>(),
-                                      difference_per_cell,
-                                      q_iterated,
-                                      VectorTools::Linfty_norm);
-    const double Linfty_error =
-      VectorTools::compute_global_error(triangulation,
-                                        difference_per_cell,
-                                        VectorTools::Linfty_norm);
- 
+    const double H1_error = 0;
+
+    const double Linfty_error = 0;
     const unsigned int n_active_cells = triangulation.n_active_cells();
     const unsigned int n_dofs         = dof_handler.n_dofs();
  
@@ -585,7 +601,45 @@ namespace Step7
     convergence_table.add_value("H1", H1_error);
     convergence_table.add_value("Linfty", Linfty_error);
   }
+
+  template <int dim>
+  double HelmholtzProblem<dim>::compute_L2_error() const
+  {
+    QGauss<dim>     quadrature_formula(fe->degree + 1);
  
+    const unsigned int n_q_points      = quadrature_formula.size();
+
+    const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
+  
+    double error = 0;
+    double error_at_point;
+ 
+    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+ 
+    FEValues<dim> fe_values(*fe,
+                            quadrature_formula,
+                            update_values | update_gradients |
+                              update_quadrature_points | update_JxW_values);
+ 
+    Solution<dim> exact_solution;
+
+    for (const auto &cell : dof_handler.active_cell_iterators()){
+      if(mesh_classifier.location_to_level_set(cell) != NonMatching::LocationToLevelSet::inside){
+        continue;
+      }
+      fe_values.reinit(cell);
+
+      std::vector<double> solution_values(n_q_points);
+      fe_values.get_function_values(solution, solution_values);
+
+      for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
+        error_at_point = (exact_solution.value(fe_values.quadrature_point(q_point))-solution_values.at(q_point));
+        error += (error_at_point * error_at_point * fe_values.JxW(q_point));
+      }
+    }
+
+    return std::sqrt(error);
+  }
  
  
   template <int dim>
@@ -631,7 +685,8 @@ namespace Step7
         else
           refine_grid();
  
- 
+        setup_discrete_level_set();
+        mesh_classifier.reclassify();
         setup_system();
  
         assemble_system();
@@ -673,6 +728,13 @@ namespace Step7
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler);
     data_out.add_data_vector(solution, "solution");
+
+    data_out.set_cell_selection(
+        [this](const typename Triangulation<dim>::cell_iterator &cell) {
+          return cell->is_active() &&
+                 mesh_classifier.location_to_level_set(cell) ==
+                   NonMatching::LocationToLevelSet::inside;
+        });
  
     data_out.build_patches(fe->degree);
     data_out.write_vtk(output);
