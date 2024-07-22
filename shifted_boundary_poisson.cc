@@ -34,11 +34,9 @@
 #include <fstream>
 #include <iostream>
 
-namespace Step7
+namespace ShiftedBoundary
 {
   using namespace dealii;
- 
- 
  
   template <int dim>
   class Solution : public Function<dim>
@@ -95,7 +93,7 @@ namespace Step7
  
  
   template <int dim>
-  class HelmholtzProblem
+  class PoissonProblem
   {
   public:
     enum RefinementMode
@@ -104,7 +102,7 @@ namespace Step7
       adaptive_refinement
     };
  
-    HelmholtzProblem(const FiniteElement<dim> &fe,
+    PoissonProblem(const FiniteElement<dim> &fe,
                      const RefinementMode      refinement_mode);
  
     void run();
@@ -115,7 +113,6 @@ namespace Step7
         const typename Triangulation<dim>::active_cell_iterator &cell,
         const unsigned int face_index) const;
     void setup_system();
-    const Tensor<1,dim> distance_vector_to_boundary(const Tensor<1,dim> &pos);
     void assemble_system();
     void solve();
     void refine_grid();
@@ -145,7 +142,7 @@ namespace Step7
   };
  
   template <int dim>
-  HelmholtzProblem<dim>::HelmholtzProblem(const FiniteElement<dim> &fe,
+  PoissonProblem<dim>::PoissonProblem(const FiniteElement<dim> &fe,
                                           const RefinementMode refinement_mode)
     : dof_handler(triangulation)
     , fe(&fe)
@@ -156,7 +153,7 @@ namespace Step7
   {}
 
   template <int dim>
-    void HelmholtzProblem<dim>::setup_discrete_level_set()
+    void PoissonProblem<dim>::setup_discrete_level_set()
     {
       level_set_dof_handler.distribute_dofs(fe_level_set);
       level_set.reinit(level_set_dof_handler.n_dofs());
@@ -168,13 +165,10 @@ namespace Step7
     }
 
     template <int dim>
-    bool HelmholtzProblem<dim>::at_surrogate_boundary(
+    bool PoissonProblem<dim>::at_surrogate_boundary(
       const typename Triangulation<dim>::active_cell_iterator &cell,
       const unsigned int                                       face_index) const
     {
-      if (cell->at_boundary(face_index))
-        return false;
-
       const NonMatching::LocationToLevelSet cell_location =
         mesh_classifier.location_to_level_set(cell);
   
@@ -182,19 +176,15 @@ namespace Step7
         mesh_classifier.location_to_level_set(cell->neighbor(face_index));
   
       if (cell_location == NonMatching::LocationToLevelSet::inside &&
-          neighbor_location == NonMatching::LocationToLevelSet::outside)
+          neighbor_location != NonMatching::LocationToLevelSet::inside)
         return true;
-  
-      if (neighbor_location == NonMatching::LocationToLevelSet::intersected &&
-          cell_location == NonMatching::LocationToLevelSet::inside)
-        return true;
-  
-      return false;
+      else
+        return false;
     }
  
  
   template <int dim>
-  void HelmholtzProblem<dim>::setup_system()
+  void PoissonProblem<dim>::setup_system()
   {
     dof_handler.distribute_dofs(*fe);
     DoFRenumbering::Cuthill_McKee(dof_handler);
@@ -209,22 +199,9 @@ namespace Step7
     system_rhs.reinit(dof_handler.n_dofs());
   }
  
-  template <int dim>
-  const Tensor<1,dim> HelmholtzProblem<dim>::distance_vector_to_boundary(const Tensor<1,dim> &pos) {
-    
-    double abs = std::sqrt(pos[0]*pos[0]+pos[1]*pos[1]);
-    double tmp[2];
-    tmp[0] = (pos[0] / abs) - pos[0];
-    tmp[1] = (pos[1] / abs) - pos[1];
-
-    Tensor<1,dim> distance_vector(tmp);
-
-    return distance_vector;
-  }
- 
   // shifted boundary method
   template <int dim>
-  void HelmholtzProblem<dim>::assemble_system()
+  void PoissonProblem<dim>::assemble_system()
   { 
 
     double alpha = 20.0;
@@ -298,20 +275,14 @@ namespace Step7
               for (unsigned int q_point = 0; q_point < n_face_q_points; ++q_point){
                 
                 Tensor<1,dim> true_normal = fe_face_values.quadrature_point(q_point);
-                double abs = std::sqrt(true_normal[0]*true_normal[0]+true_normal[1]*true_normal[1]);
-                true_normal[0] = true_normal[0]/abs;
-                true_normal[1] = true_normal[1]/abs;
+                true_normal = true_normal / true_normal.norm();
 
-                Tensor<1,dim> tangential_vector = true_normal;
-                double tmp = tangential_vector[0];
-                tangential_vector[0] = tangential_vector[1];
-                tangential_vector[1] = -1.0 * tmp;
-                abs = std::sqrt(tangential_vector[0]*tangential_vector[0]+tangential_vector[1]*tangential_vector[1]);
-                tangential_vector[0] = tangential_vector[0]/abs;
-                tangential_vector[1] = tangential_vector[1]/abs;
+                Tensor<1,dim> tangential_vector;
+                tangential_vector[0] = -1.0 * true_normal[1];
+                tangential_vector[1] = true_normal[0];
 
-                Tensor<1,dim> d = distance_vector_to_boundary(fe_face_values.quadrature_point(q_point));
-                abs = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+                Tensor<1,dim> d = fe_face_values.quadrature_point(q_point);
+                d = true_normal - d;
 
                 for (unsigned int i = 0; i < dofs_per_cell; ++i){
                   for(unsigned int j = 0; j < dofs_per_cell; ++j){
@@ -335,7 +306,7 @@ namespace Step7
                         (fe_face_values.shape_grad(i, q_point)*    // grad phi_i(x_q)
                         d*  // d(x_q)
                         ((fe_face_values.normal_vector(q_point)*      // n(x_q)
-                        true_normal)/abs) *
+                        true_normal)/d.norm()) *
                         fe_face_values.shape_grad(j, q_point)*     // grad phi_j(x_q)
                         d*
                         fe_face_values.JxW(q_point));
@@ -395,12 +366,8 @@ namespace Step7
   } 
  
   template <int dim>
-  void HelmholtzProblem<dim>::solve()
+  void PoissonProblem<dim>::solve()
   {
-    // SparseDirectUMFPACK solver;
-    // solver.initialize(system_matrix);
-    // solver.vmult(solution,system_rhs);
-
     SolverControl solver_control(10000, 1e-12);
     SolverCG<>    cg(solver_control);
 
@@ -410,7 +377,7 @@ namespace Step7
  
  
   template <int dim>
-  void HelmholtzProblem<dim>::refine_grid()
+  void PoissonProblem<dim>::refine_grid()
   {
     switch (refinement_mode)
       {
@@ -450,13 +417,10 @@ namespace Step7
  
  
   template <int dim>
-  void HelmholtzProblem<dim>::process_solution(const unsigned int cycle)
+  void PoissonProblem<dim>::process_solution(const unsigned int cycle)
   {
     const double L2_error = compute_L2_error();
  
-    // const double H1_error = 0;
-
-    // const double Linfty_error = 0;
     const unsigned int n_active_cells = triangulation.n_active_cells();
     const unsigned int n_dofs         = dof_handler.n_dofs();
  
@@ -469,12 +433,10 @@ namespace Step7
     convergence_table.add_value("cells", n_active_cells);
     convergence_table.add_value("dofs", n_dofs);
     convergence_table.add_value("L2", L2_error);
-    // convergence_table.add_value("H1", H1_error);
-    // convergence_table.add_value("Linfty", Linfty_error);
   }
 
   template <int dim>
-  double HelmholtzProblem<dim>::compute_L2_error() const
+  double PoissonProblem<dim>::compute_L2_error() const
   {
     QGauss<dim>     quadrature_formula(fe->degree + 1);
  
@@ -514,7 +476,7 @@ namespace Step7
  
  
   template <int dim>
-  void HelmholtzProblem<dim>::run()
+  void PoissonProblem<dim>::run()
   {
     const unsigned int n_cycles =
       (refinement_mode == global_refinement) ? 5 : 5;
@@ -585,24 +547,17 @@ namespace Step7
  
  
     convergence_table.set_precision("L2", 3);
-    // convergence_table.set_precision("H1", 3);
-    // convergence_table.set_precision("Linfty", 3);
- 
+
     convergence_table.set_scientific("L2", true);
-    // convergence_table.set_scientific("H1", true);
-    // convergence_table.set_scientific("Linfty", true);
  
     convergence_table.set_tex_caption("cells", "\\# cells");
     convergence_table.set_tex_caption("dofs", "\\# dofs");
     convergence_table.set_tex_caption("L2", "@f$L^2@f$-error");
-    // convergence_table.set_tex_caption("H1", "@f$H^1@f$-error");
-    // convergence_table.set_tex_caption("Linfty", "@f$L^\\infty@f$-error");
  
     convergence_table.set_tex_format("cells", "r");
     convergence_table.set_tex_format("dofs", "r");
  
     std::cout << std::endl;
-    // convergence_table.write_text(std::cout);
  
     std::string error_filename = "error";
     switch (refinement_mode)
@@ -643,18 +598,11 @@ namespace Step7
  
         std::vector<std::string> new_order;
         new_order.emplace_back("n cells");
-        // new_order.emplace_back("H1");
         new_order.emplace_back("L2");
         convergence_table.set_column_order(new_order);
- 
-        convergence_table.evaluate_convergence_rates(
-          "L2", ConvergenceTable::reduction_rate);
+
         convergence_table.evaluate_convergence_rates(
           "L2", ConvergenceTable::reduction_rate_log2);
-        // convergence_table.evaluate_convergence_rates(
-        //   "H1", ConvergenceTable::reduction_rate);
-        // convergence_table.evaluate_convergence_rates(
-        //   "H1", ConvergenceTable::reduction_rate_log2);
  
         std::cout << std::endl;
         convergence_table.write_text(std::cout);
@@ -689,7 +637,7 @@ namespace Step7
       }
   }
  
-} // namespace Step7
+} // namespace ShiftedBoundary
  
  
 int main()
@@ -699,7 +647,7 @@ int main()
   try
     {
       using namespace dealii;
-      using namespace Step7;
+      using namespace ShiftedBoundary;
  
       {
         std::cout << "Solving with Q1 elements, global refinement" << std::endl
@@ -707,8 +655,8 @@ int main()
                   << std::endl;
  
         FE_Q<dim>             fe(1);
-        HelmholtzProblem<dim> helmholtz_problem_2d(
-          fe, HelmholtzProblem<dim>::global_refinement);
+        PoissonProblem<dim> helmholtz_problem_2d(
+          fe, PoissonProblem<dim>::global_refinement);
  
         helmholtz_problem_2d.run();
  
